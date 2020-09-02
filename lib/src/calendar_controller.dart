@@ -7,6 +7,7 @@ const double _dxMax = 1.2;
 const double _dxMin = -1.2;
 
 typedef void _SelectedDayCallback(DateTime day);
+typedef void _SelectedWeekCallback(DateTime day);
 
 /// Controller required for `TableCalendar`.
 ///
@@ -31,13 +32,17 @@ class CalendarController {
   /// Currently selected day.
   DateTime get selectedDay => _selectedDay;
 
+  /// Currently select week.
+  List<DateTime> get selectedWeek => _selectedWeek;
+
   /// Currently visible calendar format.
   CalendarFormat get calendarFormat => _calendarFormat.value;
 
   /// List of currently visible days.
-  List<DateTime> get visibleDays => calendarFormat == CalendarFormat.month && !_includeInvisibleDays
-      ? _visibleDays.value.where((day) => !_isExtraDay(day)).toList()
-      : _visibleDays.value;
+  List<DateTime> get visibleDays =>
+      calendarFormat == CalendarFormat.month && !_includeInvisibleDays
+          ? _visibleDays.value.where((day) => !_isExtraDay(day)).toList()
+          : _visibleDays.value;
 
   /// `Map` of currently visible events.
   Map<DateTime, List> get visibleEvents {
@@ -81,6 +86,7 @@ class CalendarController {
   Map<DateTime, List> _holidays;
   DateTime _focusedDay;
   DateTime _selectedDay;
+  List<DateTime> _selectedWeek;
   StartingDayOfWeek _startingDayOfWeek;
   ValueNotifier<CalendarFormat> _calendarFormat;
   ValueNotifier<List<DateTime>> _visibleDays;
@@ -92,6 +98,7 @@ class CalendarController {
   bool _useNextCalendarFormat;
   bool _includeInvisibleDays;
   _SelectedDayCallback _selectedDayCallback;
+  _SelectedWeekCallback _selectedWeekCallback;
 
   void _init({
     @required Map<DateTime, List> events,
@@ -102,6 +109,7 @@ class CalendarController {
     @required bool useNextCalendarFormat,
     @required StartingDayOfWeek startingDayOfWeek,
     @required _SelectedDayCallback selectedDayCallback,
+    @required _SelectedWeekCallback selectedWeekCallback,
     @required OnVisibleDaysChanged onVisibleDaysChanged,
     @required OnCalendarCreated onCalendarCreated,
     @required bool includeInvisibleDays,
@@ -112,6 +120,7 @@ class CalendarController {
     _startingDayOfWeek = startingDayOfWeek;
     _useNextCalendarFormat = useNextCalendarFormat;
     _selectedDayCallback = selectedDayCallback;
+    _selectedWeekCallback = selectedWeekCallback;
     _includeInvisibleDays = includeInvisibleDays;
 
     _pageId = 0;
@@ -120,6 +129,7 @@ class CalendarController {
     final now = DateTime.now();
     _focusedDay = initialDay ?? _normalizeDate(now);
     _selectedDay = _focusedDay;
+    _selectedWeek = _selectWeekFromDay(_selectedDay);
     _calendarFormat = ValueNotifier(initialFormat);
     _visibleDays = ValueNotifier(_getVisibleDays());
     _previousFirstDay = _visibleDays.value.first;
@@ -220,6 +230,34 @@ class CalendarController {
     }
   }
 
+  /// Sets selected Week to a given `value`.
+  /// Use `runCallback: true` if this should trigger `OnWeekSelected` callback.
+  void setSelectedWeek(
+    DateTime value, {
+    bool isProgrammatic = true,
+    bool animate = true,
+    bool runCallback = false,
+  }) {
+    final normalizedDate = _normalizeDate(value);
+
+    if (animate) {
+      if (normalizedDate.isBefore(_getFirstDay(includeInvisible: false))) {
+        _decrementPage();
+      } else if (normalizedDate.isAfter(_getLastDay(includeInvisible: false))) {
+        _incrementPage();
+      }
+    }
+
+    _selectedDay = normalizedDate;
+    _selectedWeek = _selectWeekFromDay(normalizedDate);
+    _focusedDay = normalizedDate;
+    _updateVisibleDays(isProgrammatic);
+
+    if (isProgrammatic && runCallback && _selectedWeekCallback != null) {
+      _selectedWeekCallback(normalizedDate);
+    }
+  }
+
   /// Sets displayed month/year without changing the currently selected day.
   void setFocusedDay(DateTime value) {
     _focusedDay = _normalizeDate(value);
@@ -240,8 +278,9 @@ class CalendarController {
     return formats[id];
   }
 
-  String _getFormatButtonText() =>
-      _useNextCalendarFormat ? _availableCalendarFormats[_nextFormat()] : _availableCalendarFormats[_calendarFormat.value];
+  String _getFormatButtonText() => _useNextCalendarFormat
+      ? _availableCalendarFormats[_nextFormat()]
+      : _availableCalendarFormats[_calendarFormat.value];
 
   void _selectPrevious() {
     if (calendarFormat == CalendarFormat.month) {
@@ -283,7 +322,8 @@ class CalendarController {
       _focusedDay = _previousWeek(_focusedDay);
     } else {
       // in bottom row OR not visible
-      _focusedDay = _previousWeek(_focusedDay.subtract(const Duration(days: 7)));
+      _focusedDay =
+          _previousWeek(_focusedDay.subtract(const Duration(days: 7)));
     }
   }
 
@@ -394,7 +434,9 @@ class CalendarController {
   }
 
   DateTime _lastDayOfMonth(DateTime month) {
-    final date = month.month < 12 ? DateTime.utc(month.year, month.month + 1, 1, 12) : DateTime.utc(month.year + 1, 1, 1, 12);
+    final date = month.month < 12
+        ? DateTime.utc(month.year, month.month + 1, 1, 12)
+        : DateTime.utc(month.year + 1, 1, 1, 12);
     return date.subtract(const Duration(days: 1));
   }
 
@@ -412,6 +454,53 @@ class CalendarController {
     } else {
       return DateTime(month.year, month.month - 1);
     }
+  }
+
+  List<DateTime> _selectWeekFromDay(DateTime currentDay) {
+    List<DateTime> daysOfWeek = new List<DateTime>();
+    if (_startingDayOfWeek == StartingDayOfWeek.sunday) {
+      //Get the sunday of that week
+      // Unless that day is not in the current month
+      if (DateFormat("EEEE").format(currentDay).toLowerCase() == "sunday") {
+        daysOfWeek = addWeekDays(currentDay);
+      } else {
+        DateTime isSunday = currentDay.add(new Duration(days: -1));
+        while (DateFormat("EEEE").format(isSunday).toLowerCase() != "sunday") {
+          isSunday = isSunday.add(new Duration(days: -1));
+        }
+        daysOfWeek = addWeekDays(isSunday);
+      }
+    } else if (_startingDayOfWeek == StartingDayOfWeek.monday) {
+      //Get the sunday of that week
+      // Unless that day is not in the current month
+      if (DateFormat("EEEE").format(currentDay).toLowerCase() == "monday") {
+        daysOfWeek = addWeekDays(currentDay);
+      } else {
+        DateTime isMonday = currentDay.add(new Duration(days: -1));
+        while (DateFormat("EEEE").format(isMonday).toLowerCase() != "monday") {
+          isMonday = isMonday.add(new Duration(days: -1));
+        }
+        daysOfWeek = addWeekDays(isMonday);
+      }
+    }
+
+    //Clear out days of the week that are not visible to the current month.
+    // for (DateTime day in daysOfWeek) {
+    //   if (!_visibleDays.value.contains(day)) {
+    //     daysOfWeek.remove(day);
+    //   }
+    // }
+
+    return daysOfWeek;
+  }
+
+  List<DateTime> addWeekDays(DateTime startingDay) {
+    List<DateTime> daysOfWeek = List<DateTime>();
+    daysOfWeek.add(startingDay);
+    for (int i = 1; i < 7; i++) {
+      daysOfWeek.add(startingDay.add(new Duration(days: i)));
+    }
+    return daysOfWeek;
   }
 
   DateTime _nextMonth(DateTime month) {
@@ -436,16 +525,23 @@ class CalendarController {
   }
 
   DateTime _getEventKey(DateTime day) {
-    return visibleEvents.keys.firstWhere((it) => _isSameDay(it, day), orElse: () => null);
+    return visibleEvents.keys
+        .firstWhere((it) => _isSameDay(it, day), orElse: () => null);
   }
 
   DateTime _getHolidayKey(DateTime day) {
-    return visibleHolidays.keys.firstWhere((it) => _isSameDay(it, day), orElse: () => null);
+    return visibleHolidays.keys
+        .firstWhere((it) => _isSameDay(it, day), orElse: () => null);
   }
 
   /// Returns true if `day` is currently selected.
   bool isSelected(DateTime day) {
     return _isSameDay(day, selectedDay);
+  }
+
+  /// Returns true if `week` is currently selected.
+  bool isWeekSelected(DateTime day) {
+    return _isWeekSelected(day, selectedWeek);
   }
 
   /// Returns true if `day` is the same day as `DateTime.now()`.
@@ -454,7 +550,20 @@ class CalendarController {
   }
 
   bool _isSameDay(DateTime dayA, DateTime dayB) {
-    return dayA.year == dayB.year && dayA.month == dayB.month && dayA.day == dayB.day;
+    return dayA.year == dayB.year &&
+        dayA.month == dayB.month &&
+        dayA.day == dayB.day;
+  }
+
+  bool _isWeekSelected(DateTime day, List<DateTime> daysOfWeek) {
+    bool result = false;
+    for (DateTime dayOfWeek in daysOfWeek) {
+      if (_isSameDay(day, dayOfWeek)) {
+        result = true;
+        break;
+      }
+    }
+    return result;
   }
 
   bool _isWeekend(DateTime day, List<int> weekendDays) {
